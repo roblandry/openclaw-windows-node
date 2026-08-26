@@ -514,6 +514,9 @@ public sealed class SetupContext
     internal LlamaRuntimeInstallResult? LocalAiRuntimeInstall { get; set; }
     internal HuggingFaceModelInstallResult? LocalAiModelInstall { get; set; }
     internal LocalAiResolvedInstall? LocalAiResolvedInstall { get; set; }
+    internal LocalAiResolvedInstall? ReplacedLocalAiInstall { get; set; }
+    internal byte[]? ReplacedLocalAiRouterPreset { get; set; }
+    internal bool ReplacedLocalAiRouterPresetExisted { get; set; }
     internal bool LocalAiManifestCreatedThisRun { get; set; }
     internal ILocalAiRuntime? LocalAiRuntime { get; set; }
     internal HostHardwareInfo? LocalAiGpuBaseline { get; set; }
