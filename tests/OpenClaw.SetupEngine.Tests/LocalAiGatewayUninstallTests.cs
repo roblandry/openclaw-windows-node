@@ -180,11 +180,11 @@ public sealed class LocalAiGatewayUninstallTests
             new GpuInfo(
                 GpuVendor.Nvidia,
                 "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)",
-                64L * 1024 * 1024 * 1024,
-                60L * 1024 * 1024 * 1024,
-                "616.00",
-                13,
-                "GPU-SPARK"),
+                GpuVisibleMemoryBytes: 64L * 1024 * 1024 * 1024,
+                FreeGpuVisibleMemoryBytes: 60L * 1024 * 1024 * 1024,
+                DriverVersion: "616.00",
+                CudaMajorVersion: 13,
+                StableId: "GPU-SPARK"),
         ],
         VulkanAvailable: false);
 
