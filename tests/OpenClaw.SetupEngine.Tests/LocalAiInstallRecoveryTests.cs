@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using OpenClaw.Connection.LocalAi;
+using OpenClaw.Shared.Inference;
 using OpenClaw.Shared.Inference.Catalog;
 
 namespace OpenClaw.SetupEngine.Tests;
