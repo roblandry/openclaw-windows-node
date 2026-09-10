@@ -324,7 +324,18 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
                 throw new IOException("Could not verify Local AI gateway model replacement rollback.");
             }
-            LocalAiGatewayPriorState verified = ParseSnapshot(verifiedResult.Stdout);
+            LocalAiGatewayPriorState verified;
+            try
+            {
+                verified = ParseSnapshot(verifiedResult.Stdout);
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException or InvalidDataException)
+            {
+                await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                throw new InvalidDataException(
+                    "Could not validate the restored Local AI gateway settings.",
+                    ex);
+            }
             if (!GatewayStateMatchesPrior(
                     verified,
                     prior,
