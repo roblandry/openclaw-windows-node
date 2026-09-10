@@ -103,6 +103,60 @@ public sealed class LocalAiGatewayUninstallTests
         Assert.True(File.Exists(paths.ModelReplacementPath));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FreshProcessModelReplacement_AcceptsPreviouslyRecordedAutomaticPort(
+        bool routeWriteWasPending)
+    {
+        using var temp = new TempDirectory("local-ai-gateway-replacement-port-resume-");
+        LocalAiResolvedInstall previous = await SaveManifestAsync(temp.Path, "openai/gpt-5");
+        LocalAiInstallManifest replacementManifest = previous.Manifest with
+        {
+            ModelCatalogId = LocalModelCatalog.Qwen27BModelId,
+            ModelAlias = LocalModelCatalog.Qwen27BModelId,
+            Endpoint = "http://127.0.0.1:28766/v1",
+            GatewayFallbackModel = "openai/gpt-5",
+        };
+        const string publishedEndpoint = "http://127.0.0.1:28765/v1";
+        var paths = new LocalAiPaths(temp.Path);
+        var replacementStore = new LocalAiModelReplacementStore(paths);
+        var replacementState = new LocalAiModelReplacementState
+        {
+            PreviousManifest = previous.Manifest,
+            ReplacementManifest = replacementManifest with { Endpoint = null },
+            RouterPresetExisted = false,
+            PublishedReplacementEndpoint = routeWriteWasPending ? null : publishedEndpoint,
+            PendingReplacementEndpoint = routeWriteWasPending ? publishedEndpoint : null,
+        };
+        await replacementStore.SaveAsync(replacementState);
+        await new LocalAiManifestStore(paths).SaveAsync(replacementManifest);
+        LocalAiResolvedInstall replacement = (await new LocalAiManifestStore(paths).LoadAsync())!;
+        LocalAiResolvedInstall publishedReplacement = replacementStore.ResolveReplacementEndpoint(
+            replacementState,
+            publishedEndpoint);
+        var commands = new GatewayStateCommandRunner(
+            LocalAiGatewayProviderDefinition.BuildProviderJson(publishedReplacement),
+            JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(publishedReplacement)));
+        SetupContext context = CreateContext(temp.Path, commands);
+        context.Config.LocalAi.Enabled = true;
+        context.LocalAiResolvedInstall = replacement;
+        context.ReplacedLocalAiInstall = previous;
+        context.LocalAiModelReplacementState = replacementState;
+        context.LocalAiEligibility = LocalInferenceEligibility.Evaluate(
+            CreateQualifiedHardware(),
+            LocalModelCatalog.Qwen27BModelId);
+
+        StepResult result = await new ConfigureLocalAiGatewayStep()
+            .ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Success, result.Outcome);
+        Assert.Equal(LocalAiGatewayProviderDefinition.BuildProviderJson(replacement), commands.ProviderJson);
+        LocalAiModelReplacementState persisted = (await replacementStore.LoadAsync())!;
+        Assert.Equal(replacement.Endpoint, persisted.PublishedReplacementEndpoint);
+        Assert.Null(persisted.PendingReplacementEndpoint);
+    }
+
     [Fact]
     public async Task FreshProcessUninstall_RemovesPriorRouteDuringInterruptedReplacement()
     {
@@ -134,8 +188,11 @@ public sealed class LocalAiGatewayUninstallTests
         Assert.Equal(JsonSerializer.Serialize("openai/gpt-5"), commands.PrimaryJson);
     }
 
-    [Fact]
-    public async Task ModelReplacement_FailedGatewayRollbackPreservesDurableReplacement()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ModelReplacement_FailedGatewayRollbackPreservesDurableReplacement(
+        bool throwDuringRestore)
     {
         using var temp = new TempDirectory("local-ai-gateway-replacement-rollback-");
         LocalAiResolvedInstall previous = await SaveManifestAsync(temp.Path, "openai/gpt-5");
@@ -172,10 +229,11 @@ public sealed class LocalAiGatewayUninstallTests
         Assert.Equal(
             StepOutcome.Success,
             (await step.ExecuteAsync(context, CancellationToken.None)).Outcome);
-        commands.FailRestore = true;
+        commands.FailRestore = !throwDuringRestore;
+        commands.ThrowRestore = throwDuringRestore;
 
-        await Assert.ThrowsAsync<IOException>(() =>
-            step.RollbackAsync(context, CancellationToken.None));
+        Assert.NotNull(await Record.ExceptionAsync(() =>
+            step.RollbackAsync(context, CancellationToken.None)));
         await new PersistLocalAiManifestStep().RollbackAsync(context, CancellationToken.None);
 
         Assert.True(context.LocalAiModelReplacementRollbackBlocked);
@@ -419,6 +477,7 @@ public sealed class LocalAiGatewayUninstallTests
         public string? PrimaryJson { get; private set; } = primaryJson;
         public bool FailCapture { get; init; }
         public bool FailRestore { get; set; }
+        public bool ThrowRestore { get; set; }
         public List<string> WslCalls { get; } = [];
 
         public Task<CommandResult> RunAsync(
@@ -458,6 +517,8 @@ public sealed class LocalAiGatewayUninstallTests
             if (command.Contains("LOCAL_AI_GATEWAY_CONFIGURED", StringComparison.Ordinal) ||
                 command.Contains("LOCAL_AI_GATEWAY_RESTORED", StringComparison.Ordinal))
             {
+                if (ThrowRestore && command.Contains("LOCAL_AI_GATEWAY_RESTORED", StringComparison.Ordinal))
+                    throw new OperationCanceledException("restore timed out");
                 if (FailRestore && command.Contains("LOCAL_AI_GATEWAY_RESTORED", StringComparison.Ordinal))
                 {
                     return Task.FromResult(new CommandResult(

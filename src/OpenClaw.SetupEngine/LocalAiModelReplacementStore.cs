@@ -14,6 +14,8 @@ internal sealed record LocalAiModelReplacementState
     public required LocalAiInstallManifest ReplacementManifest { get; init; }
     public required bool RouterPresetExisted { get; init; }
     public byte[]? RouterPreset { get; init; }
+    public string? PublishedReplacementEndpoint { get; init; }
+    public string? PendingReplacementEndpoint { get; init; }
 }
 
 internal sealed class LocalAiModelReplacementStore
@@ -116,6 +118,17 @@ internal sealed class LocalAiModelReplacementStore
         return _manifestStore.ResolveAndValidate(state.PreviousManifest);
     }
 
+    public LocalAiResolvedInstall ResolveReplacementEndpoint(
+        LocalAiModelReplacementState state,
+        string endpoint)
+    {
+        Validate(state);
+        return _manifestStore.ResolveAndValidate(state.ReplacementManifest with
+        {
+            Endpoint = endpoint,
+        });
+    }
+
     public bool MatchesPrevious(
         LocalAiModelReplacementState state,
         LocalAiInstallManifest manifest) =>
@@ -159,6 +172,17 @@ internal sealed class LocalAiModelReplacementStore
             throw new InvalidDataException(
                 "The Local AI model replacement router preset snapshot is too large.");
         }
+
+        ValidateReplacementEndpoint(state, state.PublishedReplacementEndpoint);
+        ValidateReplacementEndpoint(state, state.PendingReplacementEndpoint);
+    }
+
+    private void ValidateReplacementEndpoint(
+        LocalAiModelReplacementState state,
+        string? endpoint)
+    {
+        if (endpoint is not null)
+            _ = _manifestStore.ResolveAndValidate(state.ReplacementManifest with { Endpoint = endpoint });
     }
 
     private static bool RuntimeMatches(

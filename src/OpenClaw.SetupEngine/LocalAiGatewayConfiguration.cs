@@ -82,8 +82,6 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         if (ctx.LocalAiResolvedInstall is null || ctx.LocalAiEligibility?.Plan is null)
             return StepResult.Terminal("Local AI gateway configuration requires a qualified install receipt.");
 
-        bool resumedReplacement = ctx.LocalAiModelReplacementResumed;
-
         CommandResult snapshotResult = await CaptureStateAsync(ctx, ct);
         if (snapshotResult.ExitCode != 0 || snapshotResult.TimedOut)
             return StepResult.Fail("Could not safely snapshot the existing Local AI gateway configuration.");
@@ -100,9 +98,18 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         }
 
         LocalAiResolvedInstall install = ctx.LocalAiResolvedInstall;
+        LocalAiModelReplacementState? replacementState = ctx.LocalAiModelReplacementState;
+        var replacementStore = new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir));
+        LocalAiResolvedInstall? publishedReplacement = replacementState?.PublishedReplacementEndpoint is { } published
+            ? replacementStore.ResolveReplacementEndpoint(replacementState!, published)
+            : null;
+        LocalAiResolvedInstall? pendingReplacement = replacementState?.PendingReplacementEndpoint is { } pending
+            ? replacementStore.ResolveReplacementEndpoint(replacementState!, pending)
+            : null;
         string expectedPrimary = JsonSerializer.Serialize(
             LocalAiGatewayProviderDefinition.BuildPrimaryModel(install));
         string? fallbackModel;
+        string? observedReplacementEndpoint = null;
         if (prior.ProviderExisted)
         {
             bool matchesCurrentInstall = install.Endpoint is not null &&
@@ -118,18 +125,27 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                     prior.PrimaryModelJson!,
                     JsonSerializer.Serialize(
                         LocalAiGatewayProviderDefinition.BuildPrimaryModel(replacementPriorInstall)));
-            if (!matchesCurrentInstall && !matchesReplacementPrior)
+            bool matchesPublishedReplacement = GatewayStateMatchesInstall(prior, publishedReplacement);
+            bool matchesPendingReplacement = GatewayStateMatchesInstall(prior, pendingReplacement);
+            observedReplacementEndpoint = FindMatchingReplacementEndpoint(
+                prior,
+                publishedReplacement,
+                pendingReplacement,
+                install);
+            if (!matchesCurrentInstall && !matchesReplacementPrior &&
+                !matchesPublishedReplacement && !matchesPendingReplacement)
             {
                 return StepResult.Fail(
                     "The existing llamacpp gateway route is not the exact companion-managed configuration; preserving it.");
             }
             ctx.LocalAiGatewayReplacementPriorInstall = null;
             if (replacementPriorInstall is not null &&
-                (matchesCurrentInstall || matchesReplacementPrior))
+                (matchesCurrentInstall || matchesReplacementPrior ||
+                 matchesPublishedReplacement || matchesPendingReplacement))
             {
                 fallbackModel = replacementPriorInstall.Manifest.GatewayFallbackModel;
                 ctx.LocalAiGatewayReplacementPriorInstall = replacementPriorInstall;
-                if (matchesCurrentInstall && !matchesReplacementPrior)
+                if (!matchesReplacementPrior)
                 {
                     prior = new LocalAiGatewayPriorState(
                         ProviderExisted: true,
@@ -185,8 +201,27 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         }
 
         string batchJson = LocalAiGatewayConfigBuilder.BuildBatchJson(ctx);
-        if (resumedReplacement)
-            ctx.LocalAiModelReplacementRollbackBlocked = false;
+        if (replacementState is not null)
+        {
+            replacementState = replacementState with
+            {
+                PublishedReplacementEndpoint = observedReplacementEndpoint ??
+                    replacementState.PublishedReplacementEndpoint,
+                PendingReplacementEndpoint = install.Endpoint,
+            };
+            try
+            {
+                await replacementStore.SaveAsync(replacementState, ct).ConfigureAwait(false);
+                ctx.LocalAiModelReplacementState = replacementState;
+                ctx.LocalAiModelReplacementRollbackBlocked = true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                return StepResult.Fail(
+                    "The Local AI replacement route could not be recorded before gateway configuration.",
+                    ex);
+            }
+        }
         CommandResult result = await ApplyBatchAsync(ctx, batchJson, "LOCAL_AI_GATEWAY_CONFIGURED", ct);
         if (result.ExitCode != 0 || result.TimedOut ||
             !result.Stdout.Contains("LOCAL_AI_GATEWAY_CONFIGURED", StringComparison.Ordinal))
@@ -194,6 +229,27 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             return StepResult.Fail(result.TimedOut
                 ? "Local AI gateway configuration timed out."
                 : $"Local AI gateway configuration failed (exit {result.ExitCode}).");
+        }
+
+        if (replacementState is not null)
+        {
+            replacementState = replacementState with
+            {
+                PublishedReplacementEndpoint = install.Endpoint,
+                PendingReplacementEndpoint = null,
+            };
+            try
+            {
+                await replacementStore.SaveAsync(replacementState, ct).ConfigureAwait(false);
+                ctx.LocalAiModelReplacementState = replacementState;
+                ctx.LocalAiModelReplacementRollbackBlocked = false;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                return StepResult.Fail(
+                    "The configured Local AI replacement route could not be committed.",
+                    ex);
+            }
         }
 
         return StepResult.Ok("Gateway configured to use the managed llama-server provider");
@@ -209,6 +265,10 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
 
         if (ctx.LocalAiGatewayPriorState is not { } prior)
             return;
+
+        bool modelReplacement = ctx.LocalAiModelReplacementState is not null;
+        if (modelReplacement)
+            ctx.LocalAiModelReplacementRollbackBlocked = true;
 
         CommandResult currentResult = await CaptureStateAsync(ctx, ct);
         if (currentResult.ExitCode != 0 || currentResult.TimedOut)
@@ -244,6 +304,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         if (ctx.LocalAiModelReplacementState is not null &&
             GatewayStateMatchesPrior(current, prior, ctx.LocalAiGatewayReplacementPriorInstall))
         {
+            ctx.LocalAiModelReplacementRollbackBlocked = false;
             return;
         }
 
@@ -332,8 +393,25 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
                 throw new IOException("The previous Local AI gateway settings were not restored.");
             }
+            ctx.LocalAiModelReplacementRollbackBlocked = false;
         }
     }
+
+    private static bool GatewayStateMatchesInstall(
+        LocalAiGatewayPriorState state,
+        LocalAiResolvedInstall? install) =>
+        install?.Endpoint is not null &&
+        state.ProviderExisted &&
+        LocalAiGatewayProviderDefinition.MatchesProviderJson(state.ProviderJson!, install) &&
+        state.PrimaryModelExisted &&
+        JsonEquals(
+            state.PrimaryModelJson!,
+            JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(install)));
+
+    private static string? FindMatchingReplacementEndpoint(
+        LocalAiGatewayPriorState state,
+        params LocalAiResolvedInstall?[] installs) =>
+        installs.FirstOrDefault(install => GatewayStateMatchesInstall(state, install))?.Endpoint;
 
     private static async Task RemoveManagedStateForUninstallAsync(
         SetupContext ctx,

@@ -683,7 +683,6 @@ public sealed class LocalAiInstallRecoveryTests
         await new LocalAiModelReplacementStore(paths).SaveAsync(state);
         SetupContext context = CreateContext(temp.Path, confirmDestructive: false);
         context.LocalAiModelReplacementState = state;
-        context.LocalAiModelReplacementResumed = true;
         context.LocalAiModelReplacementRollbackBlocked = true;
 
         StepResult result = await new FinalizeLocalAiModelReplacementStep()
@@ -692,7 +691,6 @@ public sealed class LocalAiInstallRecoveryTests
         Assert.Equal(StepOutcome.Success, result.Outcome);
         Assert.False(File.Exists(paths.ModelReplacementPath));
         Assert.Null(context.LocalAiModelReplacementState);
-        Assert.False(context.LocalAiModelReplacementResumed);
         Assert.False(context.LocalAiModelReplacementRollbackBlocked);
     }
 
@@ -749,6 +747,71 @@ public sealed class LocalAiInstallRecoveryTests
         Assert.Equal(installedPlan.Model.Id, restored.Manifest.ModelCatalogId);
         Assert.Equal(previousPreset, await File.ReadAllBytesAsync(paths.RouterPresetPath));
         Assert.False(File.Exists(paths.ModelReplacementPath));
+    }
+
+    [Fact]
+    public async Task PersistReplacement_ManifestRollbackFailureBlocksModelCleanup()
+    {
+        using var temp = new TempDirectory();
+        LocalInferencePlan installedPlan = CatalogPlan();
+        LocalInferencePlan selectedPlan = AlternativePlan(installedPlan);
+        const string gpuId = "GPU-0";
+        var paths = new LocalAiPaths(temp.Path);
+        await new LocalAiManifestStore(paths).SaveAsync(CreateManifest(temp.Path, installedPlan, gpuId));
+        LocalAiResolvedInstall previous = (await new LocalAiManifestStore(paths).LoadAsync())!;
+        SetupContext context = CreateContext(temp.Path, confirmDestructive: false);
+        context.Config.LocalAi.Enabled = true;
+        context.LocalAiEligibility = new LocalInferenceEligibilityResult(
+            LocalInferenceEligibilityStatus.Eligible,
+            LocalInferenceEligibilityFailureCode.None,
+            LocalInferenceSelectionFailureCode.None,
+            selectedPlan,
+            new GpuInfo(GpuVendor.Nvidia, "GPU", 64L * 1024 * 1024 * 1024, StableId: gpuId),
+            0,
+            0,
+            0,
+            0);
+        context.LocalAiPort = previous.Manifest.RequestedPort;
+        context.LocalAiRuntimeInstall = new LlamaRuntimeInstallResult(
+            Path.GetDirectoryName(previous.ExecutablePath)!,
+            previous.ExecutablePath,
+            LlamaRuntimeInstallDisposition.ReusedVerified,
+            CreatedThisRun: false,
+            previous.Manifest.RuntimeAssets.Select(asset =>
+                new LocalAiVerifiedArchive(asset.FileName, asset.SizeBytes, asset.Sha256)).ToArray(),
+            Rollback: null);
+        (string replacementModelPath, _) = ResolveModelPaths(
+            temp.Path,
+            LlamaRuntimeInstaller.Component(selectedPlan.Runtime),
+            selectedPlan.Model);
+        context.LocalAiModelInstall = new HuggingFaceModelInstallResult(
+            replacementModelPath,
+            HuggingFaceModelInstallDisposition.Downloaded,
+            CreatedThisRun: true);
+        Directory.CreateDirectory(Path.GetDirectoryName(replacementModelPath)!);
+        await File.WriteAllTextAsync(replacementModelPath, "replacement model");
+        context.ReplacedLocalAiInstall = previous;
+        var step = new PersistLocalAiManifestStep();
+        Assert.Equal(
+            StepOutcome.Success,
+            (await step.ExecuteAsync(context, CancellationToken.None)).Outcome);
+
+        await using var manifestLock = new FileStream(
+            paths.ManifestPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        Assert.NotNull(await Record.ExceptionAsync(() =>
+            step.RollbackAsync(context, CancellationToken.None)));
+        await manifestLock.DisposeAsync();
+        await new AcquireLocalAiModelStep().RollbackAsync(context, CancellationToken.None);
+
+        Assert.True(context.LocalAiModelReplacementRollbackBlocked);
+        Assert.True(File.Exists(paths.ModelReplacementPath));
+        Assert.True(File.Exists(replacementModelPath));
+        Assert.Equal(
+            selectedPlan.Model.Id,
+            (await new LocalAiManifestStore(paths).LoadAsync())!.Manifest.ModelCatalogId);
     }
 
     [Fact]

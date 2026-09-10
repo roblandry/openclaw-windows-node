@@ -269,7 +269,6 @@ public sealed class ReconcileLocalAiInstallationStep : SetupStep
             ctx.ReplacedLocalAiInstall = result.ReplacedInstall;
             ctx.LocalAiModelReplacementState = result.ReplacementState;
             ctx.LocalAiManifestCreatedThisRun = result.ReplacementManifestPersisted;
-            ctx.LocalAiModelReplacementResumed = result.ReplacementManifestPersisted;
             ctx.LocalAiModelReplacementRollbackBlocked = result.ReplacementManifestPersisted;
             if (result.ReplacementState is { } replacementState)
             {
@@ -316,7 +315,6 @@ public sealed class FinalizeLocalAiModelReplacementStep : SetupStep
                 .DeleteAsync(ct)
                 .ConfigureAwait(false);
             ctx.LocalAiModelReplacementState = null;
-            ctx.LocalAiModelReplacementResumed = false;
             ctx.LocalAiModelReplacementRollbackBlocked = false;
             return StepResult.Ok("Local AI model replacement is committed.");
         }
@@ -689,6 +687,9 @@ public sealed class PersistLocalAiManifestStep : SetupStep
 
         var paths = new LocalAiPaths(ctx.LocalDataDir);
         var store = new LocalAiManifestStore(paths);
+        bool modelReplacement = ctx.LocalAiModelReplacementState is not null;
+        if (modelReplacement)
+            ctx.LocalAiModelReplacementRollbackBlocked = true;
         if (ctx.ReplacedLocalAiInstall is { } replacedInstall)
             await store.SaveAsync(replacedInstall.Manifest, ct);
         else
@@ -714,6 +715,7 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         ctx.ReplacedLocalAiRouterPreset = null;
         ctx.ReplacedLocalAiRouterPresetExisted = false;
         ctx.LocalAiManifestCreatedThisRun = false;
+        ctx.LocalAiModelReplacementRollbackBlocked = false;
     }
 
     private static async Task WriteFileAtomicallyAsync(
