@@ -92,6 +92,7 @@ public static class SetupStepFactory
             new RunGatewayWizardStep(),
             new WindowsNodeBootstrapContextStep(),
             new StartKeepaliveStep(),
+            new FinalizeLocalAiModelReplacementStep(),
         ];
     }
 }

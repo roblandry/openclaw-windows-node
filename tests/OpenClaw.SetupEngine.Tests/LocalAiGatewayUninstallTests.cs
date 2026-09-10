@@ -92,7 +92,7 @@ public sealed class LocalAiGatewayUninstallTests
         Assert.Equal(
             LocalAiGatewayProviderDefinition.BuildProviderJson(context.LocalAiResolvedInstall!),
             commands.ProviderJson);
-        Assert.False(File.Exists(paths.ModelReplacementPath));
+        Assert.True(File.Exists(paths.ModelReplacementPath));
 
         await new ConfigureLocalAiGatewayStep().RollbackAsync(context, CancellationToken.None);
 
@@ -100,6 +100,7 @@ public sealed class LocalAiGatewayUninstallTests
         Assert.Equal(
             JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(previous)),
             commands.PrimaryJson);
+        Assert.True(File.Exists(paths.ModelReplacementPath));
     }
 
     [Fact]

@@ -269,6 +269,8 @@ public sealed class ReconcileLocalAiInstallationStep : SetupStep
             ctx.ReplacedLocalAiInstall = result.ReplacedInstall;
             ctx.LocalAiModelReplacementState = result.ReplacementState;
             ctx.LocalAiManifestCreatedThisRun = result.ReplacementManifestPersisted;
+            ctx.LocalAiModelReplacementResumed = result.ReplacementManifestPersisted;
+            ctx.LocalAiModelReplacementRollbackBlocked = result.ReplacementManifestPersisted;
             if (result.ReplacementState is { } replacementState)
             {
                 ctx.ReplacedLocalAiRouterPresetExisted = replacementState.RouterPresetExisted;
@@ -294,6 +296,33 @@ public sealed class ReconcileLocalAiInstallationStep : SetupStep
                 $"The existing Local AI installation could not be reused safely: {ex.Message} " +
                 "Run uninstall to remove it before retrying setup.",
                 ex);
+        }
+    }
+}
+
+public sealed class FinalizeLocalAiModelReplacementStep : SetupStep
+{
+    public override string Id => "finalize-local-ai-model-replacement";
+    public override string DisplayName => "Finalizing Local AI model replacement";
+    public override bool CanRetry => false;
+    public override RetryPolicy Retry => RetryPolicy.None;
+    public override bool CanSkip(SetupContext ctx) => ctx.LocalAiModelReplacementState is null;
+
+    public override async Task<StepResult> ExecuteAsync(SetupContext ctx, CancellationToken ct)
+    {
+        try
+        {
+            await new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir))
+                .DeleteAsync(ct)
+                .ConfigureAwait(false);
+            ctx.LocalAiModelReplacementState = null;
+            ctx.LocalAiModelReplacementResumed = false;
+            ctx.LocalAiModelReplacementRollbackBlocked = false;
+            return StepResult.Ok("Local AI model replacement is committed.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return StepResult.Fail("The Local AI model replacement could not be finalized.", ex);
         }
     }
 }

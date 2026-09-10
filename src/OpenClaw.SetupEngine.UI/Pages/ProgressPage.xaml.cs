@@ -53,7 +53,7 @@ public sealed partial class ProgressPage : Page
         ("start", "Start gateway", ["start-gateway", "mint-token"]),
         ("tailscale-serve", "Publish with Tailscale", ["finalize-tailscale-serve"]),
         ("pairing", "Pair device", ["pair-operator", "pair-node", "verify-e2e"]),
-        ("finish", "Finish setup", ["run-wizard", "start-keepalive"]),
+        ("finish", "Finish setup", ["run-wizard", "start-keepalive", "finalize-local-ai-model-replacement"]),
     ];
 
     public ProgressPage()

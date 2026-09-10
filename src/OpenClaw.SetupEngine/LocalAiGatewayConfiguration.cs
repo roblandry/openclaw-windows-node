@@ -82,6 +82,8 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         if (ctx.LocalAiResolvedInstall is null || ctx.LocalAiEligibility?.Plan is null)
             return StepResult.Terminal("Local AI gateway configuration requires a qualified install receipt.");
 
+        bool resumedReplacement = ctx.LocalAiModelReplacementResumed;
+
         CommandResult snapshotResult = await CaptureStateAsync(ctx, ct);
         if (snapshotResult.ExitCode != 0 || snapshotResult.TimedOut)
             return StepResult.Fail("Could not safely snapshot the existing Local AI gateway configuration.");
@@ -183,6 +185,8 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         }
 
         string batchJson = LocalAiGatewayConfigBuilder.BuildBatchJson(ctx);
+        if (resumedReplacement)
+            ctx.LocalAiModelReplacementRollbackBlocked = false;
         CommandResult result = await ApplyBatchAsync(ctx, batchJson, "LOCAL_AI_GATEWAY_CONFIGURED", ct);
         if (result.ExitCode != 0 || result.TimedOut ||
             !result.Stdout.Contains("LOCAL_AI_GATEWAY_CONFIGURED", StringComparison.Ordinal))
@@ -190,22 +194,6 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             return StepResult.Fail(result.TimedOut
                 ? "Local AI gateway configuration timed out."
                 : $"Local AI gateway configuration failed (exit {result.ExitCode}).");
-        }
-
-        if (ctx.LocalAiModelReplacementState is not null)
-        {
-            try
-            {
-                await new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir))
-                    .DeleteAsync(ct)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                return StepResult.Fail(
-                    "The completed Local AI model replacement could not be finalized.",
-                    ex);
-            }
         }
 
         return StepResult.Ok("Gateway configured to use the managed llama-server provider");

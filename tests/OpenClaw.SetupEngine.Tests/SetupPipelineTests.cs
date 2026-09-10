@@ -99,7 +99,7 @@ public class SetupPipelineTests
     {
         var steps = SetupStepFactory.BuildDefaultSteps();
 
-        Assert.Equal(37, steps.Count);
+        Assert.Equal(38, steps.Count);
         Assert.IsType<ValidateDistroInstallPathStep>(steps[0]);
         Assert.IsType<PreflightOsStep>(steps[1]);
         Assert.IsType<PreflightLocalAiHardwareStep>(steps[2]);
@@ -133,7 +133,8 @@ public class SetupPipelineTests
         Assert.IsType<VerifyEndToEndStep>(steps[pairNodeIndex + 1]);
         var wizardIndex = steps.FindIndex(s => s is RunGatewayWizardStep);
         Assert.IsType<WindowsNodeBootstrapContextStep>(steps[wizardIndex + 1]);
-        Assert.IsType<StartKeepaliveStep>(steps[^1]);
+        Assert.IsType<StartKeepaliveStep>(steps[^2]);
+        Assert.IsType<FinalizeLocalAiModelReplacementStep>(steps[^1]);
 
         var ensureWslIndex = steps.FindIndex(step => step is EnsureWslPlatformStep);
         var preflightWslIndex = steps.FindIndex(step => step is PreflightWslStep);
@@ -168,6 +169,7 @@ public class SetupPipelineTests
             steps.Single(step => step is ConfigureLocalAiWslNetworkingStep),
             steps.Single(step => step is VerifyLocalAiWslStep),
             steps.Single(step => step is ConfigureLocalAiGatewayStep),
+            steps.Single(step => step is FinalizeLocalAiModelReplacementStep),
         ];
 
         Assert.All(localAiSteps, step => Assert.True(step.CanSkip(ctx), step.Id));
