@@ -541,10 +541,7 @@ public sealed class LocalAiInstallRecoveryTests
     {
         using var temp = new TempDirectory();
         LocalInferencePlan installedPlan = CatalogPlan();
-        LocalInferencePlan selectedPlan = new(
-            installedPlan.Runtime,
-            LocalModelCatalog.ExplicitAlternatives[0],
-            LocalInferenceModelSelectionOrigin.Explicit);
+        LocalInferencePlan selectedPlan = AlternativePlan(installedPlan);
         const string gpuId = "GPU-0";
         var paths = new LocalAiPaths(temp.Path);
         LocalAiInstallManifest manifest = CreateManifest(temp.Path, installedPlan, gpuId);
@@ -573,10 +570,7 @@ public sealed class LocalAiInstallRecoveryTests
     {
         using var temp = new TempDirectory();
         LocalInferencePlan installedPlan = CatalogPlan();
-        LocalInferencePlan selectedPlan = new(
-            installedPlan.Runtime,
-            LocalModelCatalog.ExplicitAlternatives[0],
-            LocalInferenceModelSelectionOrigin.Explicit);
+        LocalInferencePlan selectedPlan = AlternativePlan(installedPlan);
         var paths = new LocalAiPaths(temp.Path);
         await new LocalAiManifestStore(paths).SaveAsync(
             CreateManifest(temp.Path, installedPlan, "GPU-0"));
@@ -597,10 +591,7 @@ public sealed class LocalAiInstallRecoveryTests
     {
         using var temp = new TempDirectory();
         LocalInferencePlan installedPlan = CatalogPlan();
-        LocalInferencePlan selectedPlan = new(
-            installedPlan.Runtime,
-            LocalModelCatalog.ExplicitAlternatives[0],
-            LocalInferenceModelSelectionOrigin.Explicit);
+        LocalInferencePlan selectedPlan = AlternativePlan(installedPlan);
         const string gpuId = "GPU-0";
         var paths = new LocalAiPaths(temp.Path);
         var manifestStore = new LocalAiManifestStore(paths);
@@ -635,10 +626,7 @@ public sealed class LocalAiInstallRecoveryTests
     {
         using var temp = new TempDirectory();
         LocalInferencePlan installedPlan = CatalogPlan();
-        LocalInferencePlan selectedPlan = new(
-            installedPlan.Runtime,
-            LocalModelCatalog.ExplicitAlternatives[0],
-            LocalInferenceModelSelectionOrigin.Explicit);
+        LocalInferencePlan selectedPlan = AlternativePlan(installedPlan);
         const string gpuId = "GPU-0";
         var paths = new LocalAiPaths(temp.Path);
         await new LocalAiManifestStore(paths).SaveAsync(CreateManifest(temp.Path, installedPlan, gpuId));
@@ -772,6 +760,16 @@ public sealed class LocalAiInstallRecoveryTests
             LocalModelCatalog.Default,
             LocalModelCatalog.GetProfiles(LocalModelCatalog.Default)[0],
             LocalInferenceModelSelectionOrigin.Default);
+    }
+
+    private static LocalInferencePlan AlternativePlan(LocalInferencePlan installedPlan)
+    {
+        LocalModelInfo model = LocalModelCatalog.ExplicitAlternatives[0];
+        return new LocalInferencePlan(
+            installedPlan.Runtime,
+            model,
+            LocalModelCatalog.GetProfiles(model)[0],
+            LocalInferenceModelSelectionOrigin.Explicit);
     }
 
     private static LocalAiInstallManifest CreateManifest(
