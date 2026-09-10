@@ -484,6 +484,8 @@ public sealed class AcquireLocalAiModelStep : SetupStep
     public override Task RollbackAsync(SetupContext ctx, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (ctx.LocalAiModelReplacementRollbackBlocked)
+            return Task.CompletedTask;
         if (ctx.LocalAiModelInstall is { } install)
         {
             _acquirer.RemoveInstalledModel(ctx.LocalDataDir, install);
@@ -652,6 +654,8 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         }
 
         if (!ctx.LocalAiManifestCreatedThisRun)
+            return;
+        if (ctx.LocalAiModelReplacementRollbackBlocked)
             return;
 
         var paths = new LocalAiPaths(ctx.LocalDataDir);

@@ -225,6 +225,12 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         CommandResult currentResult = await CaptureStateAsync(ctx, ct);
         if (currentResult.ExitCode != 0 || currentResult.TimedOut)
         {
+            if (ctx.LocalAiModelReplacementState is not null)
+            {
+                await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                throw new IOException(
+                    "Could not inspect the Local AI gateway configuration while rolling back a model replacement.");
+            }
             ctx.Logger.Warn("Could not inspect the Local AI gateway configuration during rollback; preserving it.");
             return;
         }
@@ -236,7 +242,20 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         }
         catch (Exception ex) when (ex is FormatException or JsonException or InvalidDataException)
         {
+            if (ctx.LocalAiModelReplacementState is not null)
+            {
+                await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                throw new InvalidDataException(
+                    "Could not validate the Local AI gateway configuration while rolling back a model replacement.",
+                    ex);
+            }
             ctx.Logger.Warn($"Could not validate Local AI gateway rollback state; preserving it ({ex.GetType().Name}).");
+            return;
+        }
+
+        if (ctx.LocalAiModelReplacementState is not null &&
+            GatewayStateMatchesPrior(current, prior, ctx.LocalAiGatewayReplacementPriorInstall))
+        {
             return;
         }
 
@@ -247,6 +266,12 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 ctx.LocalAiResolvedInstall!) ||
             !JsonEquals(current.PrimaryModelJson!, expectedPrimary))
         {
+            if (ctx.LocalAiModelReplacementState is not null)
+            {
+                await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                throw new InvalidDataException(
+                    "Local AI gateway settings changed during model replacement rollback; preserving the replacement receipt.");
+            }
             ctx.Logger.Warn("Local AI gateway settings changed after setup; preserving the newer values.");
             return;
         }
@@ -257,8 +282,16 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         if (restoreBatch != "[]")
         {
             CommandResult restore = await ApplyBatchAsync(ctx, restoreBatch, "LOCAL_AI_GATEWAY_RESTORED", ct);
-            if (restore.ExitCode != 0 || restore.TimedOut)
+            if (restore.ExitCode != 0 || restore.TimedOut ||
+                !restore.Stdout.Contains("LOCAL_AI_GATEWAY_RESTORED", StringComparison.Ordinal))
+            {
+                if (ctx.LocalAiModelReplacementState is not null)
+                {
+                    await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                    throw new IOException("Restoring the previous Local AI gateway settings failed.");
+                }
                 ctx.Logger.Warn("Restoring the previous Local AI gateway settings failed.");
+            }
         }
 
         var unset = new List<string>(2);
@@ -273,7 +306,33 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 ctx.DistroName!, script, TimeSpan.FromMinutes(2), ct: ct,
                 user: ctx.Config.Wsl.User, inputViaStdin: true);
             if (result.ExitCode != 0 || result.TimedOut)
+            {
+                if (ctx.LocalAiModelReplacementState is not null)
+                {
+                    await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                    throw new IOException("Removing replacement Local AI gateway settings failed.");
+                }
                 ctx.Logger.Warn("Removing setup-created Local AI gateway settings failed.");
+            }
+        }
+
+        if (ctx.LocalAiModelReplacementState is not null)
+        {
+            CommandResult verifiedResult = await CaptureStateAsync(ctx, ct).ConfigureAwait(false);
+            if (verifiedResult.ExitCode != 0 || verifiedResult.TimedOut)
+            {
+                await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                throw new IOException("Could not verify Local AI gateway model replacement rollback.");
+            }
+            LocalAiGatewayPriorState verified = ParseSnapshot(verifiedResult.Stdout);
+            if (!GatewayStateMatchesPrior(
+                    verified,
+                    prior,
+                    ctx.LocalAiGatewayReplacementPriorInstall))
+            {
+                await PreservePendingReplacementAsync(ctx, ct).ConfigureAwait(false);
+                throw new IOException("The previous Local AI gateway settings were not restored.");
+            }
         }
     }
 
@@ -317,7 +376,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                     current.PrimaryModelJson!,
                     JsonSerializer.Serialize(
                         LocalAiGatewayProviderDefinition.BuildPrimaryModel(previous)));
-            if (providerMatchesPrevious || primaryMatchesPrevious)
+            if (providerMatchesPrevious && primaryMatchesPrevious)
                 install = previous;
         }
 
@@ -339,7 +398,9 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         if (current.PrimaryModelExisted &&
             !currentPrimaryIsManaged &&
             !currentPrimaryIsFallback &&
-            LocalAiGatewayProviderDefinition.TryReadPrimaryModelJson(current.PrimaryModelJson!, out string? parsed))
+            LocalAiGatewayProviderDefinition.TryReadPrimaryModelJson(current.PrimaryModelJson!, out string? parsed) &&
+            parsed is not null &&
+            !parsed.StartsWith("llamacpp/", StringComparison.OrdinalIgnoreCase))
         {
             currentPrimary = parsed;
         }
@@ -399,6 +460,41 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 : !verified.PrimaryModelExisted;
         if (verified.ProviderExisted || !primaryIsSafe)
             throw new IOException("Managed Local AI gateway settings remained after uninstall cleanup.");
+    }
+
+    private static bool GatewayStateMatchesPrior(
+        LocalAiGatewayPriorState current,
+        LocalAiGatewayPriorState prior,
+        LocalAiResolvedInstall? replacementPriorInstall)
+    {
+        if (current.ProviderExisted != prior.ProviderExisted ||
+            current.PrimaryModelExisted != prior.PrimaryModelExisted)
+        {
+            return false;
+        }
+        if (current.ProviderExisted &&
+            !(replacementPriorInstall is not null
+                ? LocalAiGatewayProviderDefinition.MatchesProviderJson(
+                    current.ProviderJson!,
+                    replacementPriorInstall)
+                : JsonEquals(current.ProviderJson!, prior.ProviderJson!)))
+        {
+            return false;
+        }
+        return !current.PrimaryModelExisted ||
+            JsonEquals(current.PrimaryModelJson!, prior.PrimaryModelJson!);
+    }
+
+    private static async Task PreservePendingReplacementAsync(
+        SetupContext ctx,
+        CancellationToken cancellationToken)
+    {
+        ctx.LocalAiModelReplacementRollbackBlocked = true;
+        if (ctx.LocalAiModelReplacementState is not { } state)
+            return;
+        await new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir))
+            .SaveAsync(state, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static Task<CommandResult> CaptureStateAsync(SetupContext ctx, CancellationToken ct)

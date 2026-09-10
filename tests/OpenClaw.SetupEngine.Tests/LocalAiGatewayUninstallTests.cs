@@ -134,6 +134,98 @@ public sealed class LocalAiGatewayUninstallTests
     }
 
     [Fact]
+    public async Task ModelReplacement_FailedGatewayRollbackPreservesDurableReplacement()
+    {
+        using var temp = new TempDirectory("local-ai-gateway-replacement-rollback-");
+        LocalAiResolvedInstall previous = await SaveManifestAsync(temp.Path, "openai/gpt-5");
+        LocalAiInstallManifest replacementManifest = previous.Manifest with
+        {
+            ModelCatalogId = LocalModelCatalog.Qwen27BModelId,
+            ModelAlias = LocalModelCatalog.Qwen27BModelId,
+            GatewayFallbackModel = "openai/gpt-5",
+        };
+        var paths = new LocalAiPaths(temp.Path);
+        var replacementStore = new LocalAiModelReplacementStore(paths);
+        var replacementState = new LocalAiModelReplacementState
+        {
+            PreviousManifest = previous.Manifest,
+            ReplacementManifest = replacementManifest,
+            RouterPresetExisted = false,
+        };
+        await replacementStore.SaveAsync(replacementState);
+        await new LocalAiManifestStore(paths).SaveAsync(replacementManifest);
+        LocalAiResolvedInstall replacement = (await new LocalAiManifestStore(paths).LoadAsync())!;
+        var commands = new GatewayStateCommandRunner(
+            LocalAiGatewayProviderDefinition.BuildProviderJson(previous),
+            JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(previous)));
+        SetupContext context = CreateContext(temp.Path, commands);
+        context.Config.LocalAi.Enabled = true;
+        context.LocalAiResolvedInstall = replacement;
+        context.ReplacedLocalAiInstall = previous;
+        context.LocalAiModelReplacementState = replacementState;
+        context.LocalAiManifestCreatedThisRun = true;
+        context.LocalAiEligibility = LocalInferenceEligibility.Evaluate(
+            CreateQualifiedHardware(),
+            LocalModelCatalog.Qwen27BModelId);
+        var step = new ConfigureLocalAiGatewayStep();
+        Assert.Equal(
+            StepOutcome.Success,
+            (await step.ExecuteAsync(context, CancellationToken.None)).Outcome);
+        commands.FailRestore = true;
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            step.RollbackAsync(context, CancellationToken.None));
+        await new PersistLocalAiManifestStep().RollbackAsync(context, CancellationToken.None);
+
+        Assert.True(context.LocalAiModelReplacementRollbackBlocked);
+        Assert.True(File.Exists(paths.ModelReplacementPath));
+        Assert.Equal(
+            replacementManifest.ModelCatalogId,
+            (await new LocalAiManifestStore(paths).LoadAsync())!.Manifest.ModelCatalogId);
+        Assert.Equal(
+            LocalAiGatewayProviderDefinition.BuildProviderJson(replacement),
+            commands.ProviderJson);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FreshProcessUninstall_PreservesMixedReplacementRoute(bool previousProvider)
+    {
+        using var temp = new TempDirectory("local-ai-gateway-replacement-mixed-");
+        LocalAiResolvedInstall previous = await SaveManifestAsync(temp.Path, "openai/gpt-5");
+        LocalAiInstallManifest replacementManifest = previous.Manifest with
+        {
+            ModelCatalogId = LocalModelCatalog.Qwen27BModelId,
+            ModelAlias = LocalModelCatalog.Qwen27BModelId,
+            GatewayFallbackModel = "openai/gpt-5",
+        };
+        var paths = new LocalAiPaths(temp.Path);
+        var replacementStore = new LocalAiModelReplacementStore(paths);
+        await replacementStore.SaveAsync(new LocalAiModelReplacementState
+        {
+            PreviousManifest = previous.Manifest,
+            ReplacementManifest = replacementManifest,
+            RouterPresetExisted = false,
+        });
+        await new LocalAiManifestStore(paths).SaveAsync(replacementManifest);
+        LocalAiResolvedInstall replacement = (await new LocalAiManifestStore(paths).LoadAsync())!;
+        string provider = LocalAiGatewayProviderDefinition.BuildProviderJson(
+            previousProvider ? previous : replacement);
+        string primary = JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(
+            previousProvider ? replacement : previous));
+        var commands = new GatewayStateCommandRunner(provider, primary);
+        SetupContext context = CreateContext(temp.Path, commands);
+        context.IsUninstalling = true;
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new ConfigureLocalAiGatewayStep().RollbackAsync(context, CancellationToken.None));
+
+        Assert.Equal(provider, commands.ProviderJson);
+        Assert.Equal(primary, commands.PrimaryJson);
+    }
+
+    [Fact]
     public async Task FreshProcessUninstall_RemovesExactManagedProviderAndPrimary()
     {
         using var temp = new TempDirectory("local-ai-gateway-uninstall-");
@@ -325,6 +417,7 @@ public sealed class LocalAiGatewayUninstallTests
         public string? ProviderJson { get; private set; } = providerJson;
         public string? PrimaryJson { get; private set; } = primaryJson;
         public bool FailCapture { get; init; }
+        public bool FailRestore { get; set; }
         public List<string> WslCalls { get; } = [];
 
         public Task<CommandResult> RunAsync(
@@ -364,6 +457,15 @@ public sealed class LocalAiGatewayUninstallTests
             if (command.Contains("LOCAL_AI_GATEWAY_CONFIGURED", StringComparison.Ordinal) ||
                 command.Contains("LOCAL_AI_GATEWAY_RESTORED", StringComparison.Ordinal))
             {
+                if (FailRestore && command.Contains("LOCAL_AI_GATEWAY_RESTORED", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(new CommandResult(
+                        1,
+                        "",
+                        "restore failed",
+                        TimeSpan.Zero,
+                        TimedOut: false));
+                }
                 string encoded = Assert.Single(environment!).Value;
                 string batch = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
                 using JsonDocument document = JsonDocument.Parse(batch);
