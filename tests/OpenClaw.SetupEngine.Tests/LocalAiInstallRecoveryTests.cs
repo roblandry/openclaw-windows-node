@@ -598,6 +598,7 @@ public sealed class LocalAiInstallRecoveryTests
         LocalAiInstallManifest previous = CreateManifest(temp.Path, installedPlan, gpuId);
         LocalAiInstallManifest replacement = CreateManifest(temp.Path, selectedPlan, gpuId);
         byte[] previousPreset = "previous preset"u8.ToArray();
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.RouterPresetPath)!);
         await File.WriteAllBytesAsync(paths.RouterPresetPath, previousPreset);
         await manifestStore.SaveAsync(previous);
         await new LocalAiModelReplacementStore(paths).SaveAsync(new LocalAiModelReplacementState
