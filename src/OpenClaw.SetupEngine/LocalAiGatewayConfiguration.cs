@@ -109,7 +109,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         string expectedPrimary = JsonSerializer.Serialize(
             LocalAiGatewayProviderDefinition.BuildPrimaryModel(install));
         string? fallbackModel;
-        Uri? observedReplacementEndpoint = null;
+        string? observedReplacementEndpoint = null;
         if (prior.ProviderExisted)
         {
             bool matchesCurrentInstall = install.Endpoint is not null &&
@@ -207,7 +207,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             {
                 PublishedReplacementEndpoint = observedReplacementEndpoint ??
                     replacementState.PublishedReplacementEndpoint,
-                PendingReplacementEndpoint = install.Endpoint,
+                PendingReplacementEndpoint = install.Endpoint?.AbsoluteUri,
             };
             try
             {
@@ -235,7 +235,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         {
             replacementState = replacementState with
             {
-                PublishedReplacementEndpoint = install.Endpoint,
+                PublishedReplacementEndpoint = install.Endpoint?.AbsoluteUri,
                 PendingReplacementEndpoint = null,
             };
             try
@@ -408,10 +408,10 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             state.PrimaryModelJson!,
             JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(install)));
 
-    private static Uri? FindMatchingReplacementEndpoint(
+    private static string? FindMatchingReplacementEndpoint(
         LocalAiGatewayPriorState state,
         params LocalAiResolvedInstall?[] installs) =>
-        installs.FirstOrDefault(install => GatewayStateMatchesInstall(state, install))?.Endpoint;
+        installs.FirstOrDefault(install => GatewayStateMatchesInstall(state, install))?.Endpoint?.AbsoluteUri;
 
     private static async Task RemoveManagedStateForUninstallAsync(
         SetupContext ctx,

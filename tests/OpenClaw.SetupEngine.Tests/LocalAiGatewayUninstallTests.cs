@@ -118,7 +118,7 @@ public sealed class LocalAiGatewayUninstallTests
             Endpoint = "http://127.0.0.1:28766/v1",
             GatewayFallbackModel = "openai/gpt-5",
         };
-        var publishedEndpoint = new Uri("http://127.0.0.1:28765/v1");
+        const string publishedEndpoint = "http://127.0.0.1:28765/v1";
         var paths = new LocalAiPaths(temp.Path);
         var replacementStore = new LocalAiModelReplacementStore(paths);
         var replacementState = new LocalAiModelReplacementState
@@ -153,7 +153,7 @@ public sealed class LocalAiGatewayUninstallTests
         Assert.Equal(StepOutcome.Success, result.Outcome);
         Assert.Equal(LocalAiGatewayProviderDefinition.BuildProviderJson(replacement), commands.ProviderJson);
         LocalAiModelReplacementState persisted = (await replacementStore.LoadAsync())!;
-        Assert.Equal(replacement.Endpoint, persisted.PublishedReplacementEndpoint);
+        Assert.Equal(replacement.Endpoint!.AbsoluteUri, persisted.PublishedReplacementEndpoint);
         Assert.Null(persisted.PendingReplacementEndpoint);
     }
 
