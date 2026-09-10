@@ -536,15 +536,18 @@ public sealed class LocalAiInstallRecoveryTests
         Assert.True(File.Exists(paths.ManifestPath));
     }
 
-    [Fact]
-    public async Task Reconciler_DifferentSelectedModel_ReusesRuntimeAndRequestsReplacement()
+    [Theory]
+    [InlineData("GPU-0", "GPU-0")]
+    [InlineData("cuda:GPU-0", "GPU-0")]
+    public async Task Reconciler_DifferentSelectedModel_ReusesRuntimeAndRequestsReplacement(
+        string persistedGpuId,
+        string selectedGpuId)
     {
         using var temp = new TempDirectory();
         LocalInferencePlan installedPlan = CatalogPlan();
         LocalInferencePlan selectedPlan = AlternativePlan(installedPlan);
-        const string gpuId = "GPU-0";
         var paths = new LocalAiPaths(temp.Path);
-        LocalAiInstallManifest manifest = CreateManifest(temp.Path, installedPlan, gpuId);
+        LocalAiInstallManifest manifest = CreateManifest(temp.Path, installedPlan, persistedGpuId);
         await new LocalAiManifestStore(paths).SaveAsync(manifest);
         var reconciler = new LocalAiInstallReconciler(
             new ValidRuntimeInspector(),
@@ -553,7 +556,7 @@ public sealed class LocalAiInstallRecoveryTests
         LocalAiReconcileResult result = await reconciler.ReconcileAsync(
             temp.Path,
             selectedPlan,
-            gpuId,
+            selectedGpuId,
             CancellationToken.None);
 
         Assert.False(result.Reused);
@@ -562,6 +565,7 @@ public sealed class LocalAiInstallRecoveryTests
         Assert.False(result.RuntimeInstall.CreatedThisRun);
         Assert.Null(result.ModelInstall);
         Assert.Equal(manifest.ModelCatalogId, result.ReplacedInstall!.Manifest.ModelCatalogId);
+        Assert.Equal(selectedGpuId, result.ReplacedInstall.Manifest.SelectedGpuId);
         Assert.True(File.Exists(paths.ManifestPath));
     }
 
@@ -606,7 +610,21 @@ public sealed class LocalAiInstallRecoveryTests
             RouterPresetExisted = true,
             RouterPreset = previousPreset,
         };
+        await Assert.ThrowsAsync<InvalidDataException>(() => manifestStore.SaveAsync(
+            replacement with
+            {
+                ModelReplacement = recovery with
+                {
+                    PreviousManifest = previous with { Architecture = "arm64" },
+                },
+            }));
         await manifestStore.SaveAsync(replacement with { ModelReplacement = recovery });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => new LocalAiInstallReconciler(
+                new ValidRuntimeInspector(),
+                new AcceptingModelVerifier())
+            .ReconcileAsync(temp.Path, installedPlan, gpuId, CancellationToken.None));
+        Assert.NotNull((await manifestStore.LoadAsync())!.Manifest.ModelReplacement);
 
         LocalAiReconcileResult result = await new LocalAiInstallReconciler(
                 new ValidRuntimeInspector(),

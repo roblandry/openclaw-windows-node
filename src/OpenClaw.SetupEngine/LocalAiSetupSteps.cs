@@ -680,8 +680,7 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         LocalAiModelReplacement? replacement = ctx.LocalAiModelReplacement;
         if (replacement?.RouterPresetExisted == true)
         {
-            await WriteFileAtomicallyAsync(
-                paths,
+            await AtomicFile.WriteAllBytesAsync(
                 paths.RouterPresetPath,
                 replacement.RouterPreset
                     ?? throw new InvalidDataException("The previous Local AI router preset snapshot is missing."),
@@ -696,28 +695,6 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         ctx.LocalAiModelReplacement = null;
         ctx.LocalAiManifestCreatedThisRun = false;
         ctx.LocalAiModelReplacementRollbackBlocked = false;
-    }
-
-    private static async Task WriteFileAtomicallyAsync(
-        LocalAiPaths paths,
-        string destinationPath,
-        byte[] content,
-        CancellationToken cancellationToken)
-    {
-        string temporaryPath = Path.Combine(
-            paths.RootDirectory,
-            $".{Path.GetFileName(destinationPath)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            _ = paths.ResolveContainedPath(Path.GetFileName(temporaryPath), nameof(temporaryPath));
-            await File.WriteAllBytesAsync(temporaryPath, content, cancellationToken);
-            File.Move(temporaryPath, destinationPath, overwrite: true);
-        }
-        finally
-        {
-            try { File.Delete(temporaryPath); }
-            catch { }
-        }
     }
 
     private static ImmutableArray<LocalAiAssetReceipt> BuildRuntimeReceipts(

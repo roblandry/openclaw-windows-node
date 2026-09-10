@@ -439,8 +439,12 @@ public sealed class LocalAiManifestStore
                 manifest.ModelCatalogId,
                 StringComparison.Ordinal) ||
             !string.Equals(replacement.PreviousManifest.RuntimeId, manifest.RuntimeId, StringComparison.Ordinal) ||
+            !string.Equals(replacement.PreviousManifest.Engine, manifest.Engine, StringComparison.Ordinal) ||
+            !string.Equals(replacement.PreviousManifest.EngineVersion, manifest.EngineVersion, StringComparison.Ordinal) ||
+            !string.Equals(replacement.PreviousManifest.Architecture, manifest.Architecture, StringComparison.Ordinal) ||
             !string.Equals(replacement.PreviousManifest.SelectedGpuId, manifest.SelectedGpuId, StringComparison.Ordinal) ||
             !string.Equals(replacement.PreviousManifest.ExecutablePath, manifest.ExecutablePath, StringComparison.Ordinal) ||
+            replacement.PreviousManifest.RequestedPort != manifest.RequestedPort ||
             !replacement.PreviousManifest.RuntimeAssets.SequenceEqual(manifest.RuntimeAssets))
         {
             throw new InvalidDataException(

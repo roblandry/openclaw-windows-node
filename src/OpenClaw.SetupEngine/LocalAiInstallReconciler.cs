@@ -71,26 +71,14 @@ internal sealed class LocalAiInstallReconciler
             return LocalAiReconcileResult.NotInstalled;
 
         LocalAiModelReplacement? replacement = install.Manifest.ModelReplacement;
-        if (replacement is not null)
+        if (replacement is not null &&
+            !string.Equals(
+                plan.Model.Id,
+                install.Manifest.ModelCatalogId,
+                StringComparison.Ordinal))
         {
-            if (string.Equals(
-                    plan.Model.Id,
-                    replacement.PreviousManifest.ModelCatalogId,
-                    StringComparison.Ordinal))
-            {
-                await manifestStore.SaveAsync(replacement.PreviousManifest, cancellationToken)
-                    .ConfigureAwait(false);
-                install = manifestStore.ResolveAndValidate(replacement.PreviousManifest);
-                replacement = null;
-            }
-            else if (!string.Equals(
-                         plan.Model.Id,
-                         install.Manifest.ModelCatalogId,
-                         StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "Complete the pending Local AI model replacement before selecting another model.");
-            }
+            throw new InvalidDataException(
+                "Complete the pending Local AI model replacement before selecting another model.");
         }
 
         bool migrateLegacyGpuId =
@@ -110,6 +98,16 @@ internal sealed class LocalAiInstallReconciler
         {
             throw new InvalidDataException(
                 inspection.Error ?? "The managed llama-server runtime no longer passes validation.");
+        }
+
+        if (migrateLegacyGpuId)
+        {
+            LocalAiInstallManifest migratedManifest = install.Manifest with
+            {
+                SelectedGpuId = selectedGpuId,
+            };
+            await manifestStore.SaveAsync(migratedManifest, cancellationToken).ConfigureAwait(false);
+            install = manifestStore.ResolveAndValidate(migratedManifest);
         }
 
         if (!string.Equals(
@@ -139,15 +137,6 @@ internal sealed class LocalAiInstallReconciler
                 "The managed Local AI model no longer matches its pinned size and SHA-256 digest.");
         }
 
-        if (migrateLegacyGpuId)
-        {
-            LocalAiInstallManifest migratedManifest = install.Manifest with
-            {
-                SelectedGpuId = selectedGpuId,
-            };
-            await manifestStore.SaveAsync(migratedManifest, cancellationToken).ConfigureAwait(false);
-            install = manifestStore.ResolveAndValidate(migratedManifest);
-        }
         var modelInstall = new HuggingFaceModelInstallResult(
             install.ModelPath,
             HuggingFaceModelInstallDisposition.ReusedVerified,
