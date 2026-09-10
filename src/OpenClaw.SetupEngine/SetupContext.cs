@@ -515,6 +515,7 @@ public sealed class SetupContext
     internal HuggingFaceModelInstallResult? LocalAiModelInstall { get; set; }
     internal LocalAiResolvedInstall? LocalAiResolvedInstall { get; set; }
     internal LocalAiResolvedInstall? ReplacedLocalAiInstall { get; set; }
+    internal LocalAiModelReplacementState? LocalAiModelReplacementState { get; set; }
     internal byte[]? ReplacedLocalAiRouterPreset { get; set; }
     internal bool ReplacedLocalAiRouterPresetExisted { get; set; }
     internal bool LocalAiManifestCreatedThisRun { get; set; }

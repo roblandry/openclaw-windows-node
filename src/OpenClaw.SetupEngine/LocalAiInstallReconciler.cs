@@ -8,9 +8,12 @@ internal sealed record LocalAiReconcileResult(
     LocalAiResolvedInstall? ResolvedInstall,
     LlamaRuntimeInstallResult? RuntimeInstall,
     HuggingFaceModelInstallResult? ModelInstall,
-    LocalAiResolvedInstall? ReplacedInstall)
+    LocalAiResolvedInstall? ReplacedInstall,
+    LocalAiModelReplacementState? ReplacementState,
+    bool ReplacementManifestPersisted)
 {
-    public static LocalAiReconcileResult NotInstalled { get; } = new(false, null, null, null, null);
+    public static LocalAiReconcileResult NotInstalled { get; } =
+        new(false, null, null, null, null, null, false);
 }
 
 internal interface ILocalAiModelFileVerifier
@@ -62,11 +65,49 @@ internal sealed class LocalAiInstallReconciler
 
         var paths = new LocalAiPaths(localDataDirectory);
         var manifestStore = new LocalAiManifestStore(paths);
+        var replacementStore = new LocalAiModelReplacementStore(paths);
         LocalAiResolvedInstall? install = await manifestStore
             .LoadAsync(cancellationToken)
             .ConfigureAwait(false);
         if (install is null)
             return LocalAiReconcileResult.NotInstalled;
+
+        LocalAiModelReplacementState? replacementState = await replacementStore
+            .LoadAsync(cancellationToken)
+            .ConfigureAwait(false);
+        bool replacementManifestPersisted = false;
+        if (replacementState is not null)
+        {
+            bool currentIsPrevious = replacementStore.MatchesPrevious(
+                replacementState,
+                install.Manifest);
+            replacementManifestPersisted = replacementStore.MatchesReplacement(
+                replacementState,
+                install.Manifest);
+            if (!currentIsPrevious && !replacementManifestPersisted)
+            {
+                throw new InvalidDataException(
+                    "The managed Local AI installation does not match either side of its pending model replacement.");
+            }
+
+            string selectedModelId = plan.Model.Id;
+            if (currentIsPrevious && string.Equals(
+                    selectedModelId,
+                    replacementState.PreviousManifest.ModelCatalogId,
+                    StringComparison.Ordinal))
+            {
+                await replacementStore.DeleteAsync(cancellationToken).ConfigureAwait(false);
+                replacementState = null;
+            }
+            else if (!string.Equals(
+                         selectedModelId,
+                         replacementState.ReplacementManifest.ModelCatalogId,
+                         StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Complete the pending Local AI model replacement before selecting another model.");
+            }
+        }
 
         bool migrateLegacyGpuId =
             !string.Equals(install.Manifest.SelectedGpuId, selectedGpuId, StringComparison.Ordinal) &&
@@ -92,12 +133,17 @@ internal sealed class LocalAiInstallReconciler
                 plan.Model.Id,
                 StringComparison.Ordinal))
         {
+            LocalAiResolvedInstall replacedInstall = replacementState is null
+                ? install
+                : replacementStore.ResolvePrevious(replacementState);
             return new LocalAiReconcileResult(
                 false,
                 null,
                 CreateRuntimeInstall(install),
                 null,
-                install);
+                replacedInstall,
+                replacementState,
+                false);
         }
 
         ValidateSelectedModelMatch(install, plan, selectedGpuId, localDataDirectory);
@@ -123,7 +169,14 @@ internal sealed class LocalAiInstallReconciler
             install.ModelPath,
             HuggingFaceModelInstallDisposition.ReusedVerified,
             CreatedThisRun: false);
-        return new LocalAiReconcileResult(true, install, CreateRuntimeInstall(install), modelInstall, null);
+        return new LocalAiReconcileResult(
+            true,
+            install,
+            CreateRuntimeInstall(install),
+            modelInstall,
+            replacementState is null ? null : replacementStore.ResolvePrevious(replacementState),
+            replacementState,
+            replacementManifestPersisted);
     }
 
     private static LlamaRuntimeInstallResult CreateRuntimeInstall(LocalAiResolvedInstall install) =>

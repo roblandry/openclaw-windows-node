@@ -569,6 +569,68 @@ public sealed class LocalAiInstallRecoveryTests
     }
 
     [Fact]
+    public async Task Reconciler_DifferentSelectedModel_StillRejectsDifferentGpu()
+    {
+        using var temp = new TempDirectory();
+        LocalInferencePlan installedPlan = CatalogPlan();
+        LocalInferencePlan selectedPlan = new(
+            installedPlan.Runtime,
+            LocalModelCatalog.ExplicitAlternatives[0],
+            LocalInferenceModelSelectionOrigin.Explicit);
+        var paths = new LocalAiPaths(temp.Path);
+        await new LocalAiManifestStore(paths).SaveAsync(
+            CreateManifest(temp.Path, installedPlan, "GPU-0"));
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new LocalAiInstallReconciler(new ValidRuntimeInspector(), new AcceptingModelVerifier())
+                .ReconcileAsync(temp.Path, selectedPlan, "GPU-1", CancellationToken.None));
+
+        Assert.Contains("selected GPU", error.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(paths.ModelReplacementPath));
+        Assert.Equal(
+            installedPlan.Model.Id,
+            (await new LocalAiManifestStore(paths).LoadAsync())!.Manifest.ModelCatalogId);
+    }
+
+    [Fact]
+    public async Task Reconciler_FreshProcessResumesPersistedModelReplacement()
+    {
+        using var temp = new TempDirectory();
+        LocalInferencePlan installedPlan = CatalogPlan();
+        LocalInferencePlan selectedPlan = new(
+            installedPlan.Runtime,
+            LocalModelCatalog.ExplicitAlternatives[0],
+            LocalInferenceModelSelectionOrigin.Explicit);
+        const string gpuId = "GPU-0";
+        var paths = new LocalAiPaths(temp.Path);
+        var manifestStore = new LocalAiManifestStore(paths);
+        LocalAiInstallManifest previous = CreateManifest(temp.Path, installedPlan, gpuId);
+        LocalAiInstallManifest replacement = CreateManifest(temp.Path, selectedPlan, gpuId);
+        byte[] previousPreset = "previous preset"u8.ToArray();
+        await File.WriteAllBytesAsync(paths.RouterPresetPath, previousPreset);
+        await manifestStore.SaveAsync(previous);
+        await new LocalAiModelReplacementStore(paths).SaveAsync(new LocalAiModelReplacementState
+        {
+            PreviousManifest = previous,
+            ReplacementManifest = replacement,
+            RouterPresetExisted = true,
+            RouterPreset = previousPreset,
+        });
+        await manifestStore.SaveAsync(replacement);
+
+        LocalAiReconcileResult result = await new LocalAiInstallReconciler(
+                new ValidRuntimeInspector(),
+                new AcceptingModelVerifier())
+            .ReconcileAsync(temp.Path, selectedPlan, gpuId, CancellationToken.None);
+
+        Assert.True(result.Reused);
+        Assert.True(result.ReplacementManifestPersisted);
+        Assert.Equal(installedPlan.Model.Id, result.ReplacedInstall!.Manifest.ModelCatalogId);
+        Assert.Equal(previousPreset, result.ReplacementState!.RouterPreset);
+        Assert.True(File.Exists(paths.ModelReplacementPath));
+    }
+
+    [Fact]
     public async Task PersistReplacement_RollbackRestoresPreviousManifestAndRouterPreset()
     {
         using var temp = new TempDirectory();
@@ -623,6 +685,7 @@ public sealed class LocalAiInstallRecoveryTests
         LocalAiResolvedInstall restored = (await new LocalAiManifestStore(paths).LoadAsync())!;
         Assert.Equal(installedPlan.Model.Id, restored.Manifest.ModelCatalogId);
         Assert.Equal(previousPreset, await File.ReadAllBytesAsync(paths.RouterPresetPath));
+        Assert.False(File.Exists(paths.ModelReplacementPath));
     }
 
     [Fact]

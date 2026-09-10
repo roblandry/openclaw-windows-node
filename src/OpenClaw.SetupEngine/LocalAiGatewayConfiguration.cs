@@ -121,12 +121,29 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 return StepResult.Fail(
                     "The existing llamacpp gateway route is not the exact companion-managed configuration; preserving it.");
             }
-            ctx.LocalAiGatewayReplacementPriorInstall = matchesReplacementPrior
-                ? replacementPriorInstall
-                : null;
-            fallbackModel = matchesReplacementPrior
-                ? replacementPriorInstall!.Manifest.GatewayFallbackModel
-                : install.Manifest.GatewayFallbackModel;
+            ctx.LocalAiGatewayReplacementPriorInstall = null;
+            if (replacementPriorInstall is not null &&
+                (matchesCurrentInstall || matchesReplacementPrior))
+            {
+                fallbackModel = replacementPriorInstall.Manifest.GatewayFallbackModel;
+                ctx.LocalAiGatewayReplacementPriorInstall = replacementPriorInstall;
+                if (matchesCurrentInstall && !matchesReplacementPrior)
+                {
+                    prior = new LocalAiGatewayPriorState(
+                        ProviderExisted: true,
+                        ProviderJson: LocalAiGatewayProviderDefinition.BuildProviderJson(
+                            replacementPriorInstall),
+                        PrimaryModelExisted: true,
+                        PrimaryModelJson: JsonSerializer.Serialize(
+                            LocalAiGatewayProviderDefinition.BuildPrimaryModel(
+                                replacementPriorInstall)));
+                    ctx.LocalAiGatewayPriorState = prior;
+                }
+            }
+            else
+            {
+                fallbackModel = install.Manifest.GatewayFallbackModel;
+            }
         }
         else if (prior.PrimaryModelExisted)
         {
@@ -173,6 +190,22 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             return StepResult.Fail(result.TimedOut
                 ? "Local AI gateway configuration timed out."
                 : $"Local AI gateway configuration failed (exit {result.ExitCode}).");
+        }
+
+        if (ctx.LocalAiModelReplacementState is not null)
+        {
+            try
+            {
+                await new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir))
+                    .DeleteAsync(ct)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return StepResult.Fail(
+                    "The completed Local AI model replacement could not be finalized.",
+                    ex);
+            }
         }
 
         return StepResult.Ok("Gateway configured to use the managed llama-server provider");
@@ -268,6 +301,26 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         LocalAiGatewayPriorState current = ParseSnapshot(currentResult.Stdout);
         if (!current.ProviderExisted && !current.PrimaryModelExisted)
             return;
+
+        var replacementStore = new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir));
+        LocalAiModelReplacementState? replacementState =
+            await replacementStore
+                .LoadAsync(ct)
+                .ConfigureAwait(false);
+        if (replacementState is not null)
+        {
+            LocalAiResolvedInstall previous = replacementStore.ResolvePrevious(replacementState);
+            bool providerMatchesPrevious = current.ProviderExisted && previous.Endpoint is not null &&
+                LocalAiGatewayProviderDefinition.MatchesProviderJson(current.ProviderJson!, previous);
+            bool primaryMatchesPrevious = current.PrimaryModelExisted &&
+                JsonEquals(
+                    current.PrimaryModelJson!,
+                    JsonSerializer.Serialize(
+                        LocalAiGatewayProviderDefinition.BuildPrimaryModel(previous)));
+            if (providerMatchesPrevious || primaryMatchesPrevious)
+                install = previous;
+        }
+
         if (install.Endpoint is null)
         {
             throw new InvalidDataException(

@@ -29,6 +29,7 @@ public sealed class LocalAiPaths
         LocalDataDirectory = Path.GetFullPath(localDataDirectory);
         RootDirectory = Path.Combine(LocalDataDirectory, "LocalAI");
         ManifestPath = Path.Combine(RootDirectory, "state.json");
+        ModelReplacementPath = Path.Combine(RootDirectory, "model-replacement.json");
         EnginesDirectory = Path.Combine(RootDirectory, "engines");
         ModelsDirectory = Path.Combine(RootDirectory, "models");
         DownloadsDirectory = Path.Combine(RootDirectory, "downloads");
@@ -42,6 +43,7 @@ public sealed class LocalAiPaths
     public string LocalDataDirectory { get; }
     public string RootDirectory { get; }
     public string ManifestPath { get; }
+    public string ModelReplacementPath { get; }
     public string EnginesDirectory { get; }
     public string ModelsDirectory { get; }
     public string DownloadsDirectory { get; }
