@@ -14,8 +14,8 @@ internal sealed record LocalAiModelReplacementState
     public required LocalAiInstallManifest ReplacementManifest { get; init; }
     public required bool RouterPresetExisted { get; init; }
     public byte[]? RouterPreset { get; init; }
-    public string? PublishedReplacementEndpoint { get; init; }
-    public string? PendingReplacementEndpoint { get; init; }
+    public Uri? PublishedReplacementEndpoint { get; init; }
+    public Uri? PendingReplacementEndpoint { get; init; }
 }
 
 internal sealed class LocalAiModelReplacementStore
@@ -120,7 +120,7 @@ internal sealed class LocalAiModelReplacementStore
 
     public LocalAiResolvedInstall ResolveReplacementEndpoint(
         LocalAiModelReplacementState state,
-        string endpoint)
+        Uri endpoint)
     {
         Validate(state);
         return _manifestStore.ResolveAndValidate(state.ReplacementManifest with
@@ -179,7 +179,7 @@ internal sealed class LocalAiModelReplacementStore
 
     private void ValidateReplacementEndpoint(
         LocalAiModelReplacementState state,
-        string? endpoint)
+        Uri? endpoint)
     {
         if (endpoint is not null)
             _ = _manifestStore.ResolveAndValidate(state.ReplacementManifest with { Endpoint = endpoint });

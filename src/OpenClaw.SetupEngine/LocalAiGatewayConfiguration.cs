@@ -109,7 +109,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         string expectedPrimary = JsonSerializer.Serialize(
             LocalAiGatewayProviderDefinition.BuildPrimaryModel(install));
         string? fallbackModel;
-        string? observedReplacementEndpoint = null;
+        Uri? observedReplacementEndpoint = null;
         if (prior.ProviderExisted)
         {
             bool matchesCurrentInstall = install.Endpoint is not null &&
@@ -408,7 +408,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             state.PrimaryModelJson!,
             JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(install)));
 
-    private static string? FindMatchingReplacementEndpoint(
+    private static Uri? FindMatchingReplacementEndpoint(
         LocalAiGatewayPriorState state,
         params LocalAiResolvedInstall?[] installs) =>
         installs.FirstOrDefault(install => GatewayStateMatchesInstall(state, install))?.Endpoint;
