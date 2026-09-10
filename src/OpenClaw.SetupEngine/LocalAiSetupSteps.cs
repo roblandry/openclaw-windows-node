@@ -267,14 +267,9 @@ public sealed class ReconcileLocalAiInstallationStep : SetupStep
             ctx.LocalAiRuntimeInstall = result.RuntimeInstall;
             ctx.LocalAiModelInstall = result.ModelInstall;
             ctx.ReplacedLocalAiInstall = result.ReplacedInstall;
-            ctx.LocalAiModelReplacementState = result.ReplacementState;
-            ctx.LocalAiManifestCreatedThisRun = result.ReplacementManifestPersisted;
-            ctx.LocalAiModelReplacementRollbackBlocked = result.ReplacementManifestPersisted;
-            if (result.ReplacementState is { } replacementState)
-            {
-                ctx.ReplacedLocalAiRouterPresetExisted = replacementState.RouterPresetExisted;
-                ctx.ReplacedLocalAiRouterPreset = replacementState.RouterPreset;
-            }
+            ctx.LocalAiModelReplacement = result.Replacement;
+            ctx.LocalAiManifestCreatedThisRun = result.Replacement is not null;
+            ctx.LocalAiModelReplacementRollbackBlocked = result.Replacement is not null;
             if (!result.Reused && result.ReplacedInstall is null)
                 return StepResult.Skip("No completed managed Local AI installation was found.");
             if (result.ResolvedInstall is not null)
@@ -305,16 +300,21 @@ public sealed class FinalizeLocalAiModelReplacementStep : SetupStep
     public override string DisplayName => "Finalizing Local AI model replacement";
     public override bool CanRetry => false;
     public override RetryPolicy Retry => RetryPolicy.None;
-    public override bool CanSkip(SetupContext ctx) => ctx.LocalAiModelReplacementState is null;
+    public override bool CanSkip(SetupContext ctx) => ctx.LocalAiModelReplacement is null;
 
     public override async Task<StepResult> ExecuteAsync(SetupContext ctx, CancellationToken ct)
     {
         try
         {
-            await new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir))
-                .DeleteAsync(ct)
-                .ConfigureAwait(false);
-            ctx.LocalAiModelReplacementState = null;
+            var paths = new LocalAiPaths(ctx.LocalDataDir);
+            var store = new LocalAiManifestStore(paths);
+            LocalAiResolvedInstall install = ctx.LocalAiResolvedInstall
+                ?? await store.LoadAsync(ct).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The Local AI installation receipt is missing.");
+            LocalAiInstallManifest committed = install.Manifest with { ModelReplacement = null };
+            await store.SaveAsync(committed, ct).ConfigureAwait(false);
+            ctx.LocalAiResolvedInstall = store.ResolveAndValidate(committed);
+            ctx.LocalAiModelReplacement = null;
             ctx.LocalAiModelReplacementRollbackBlocked = false;
             return StepResult.Ok("Local AI model replacement is committed.");
         }
@@ -608,37 +608,24 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         };
 
         var store = new LocalAiManifestStore(paths);
-        var replacementStore = new LocalAiModelReplacementStore(paths);
-        bool replacementStateCreated = false;
         try
         {
             if (ctx.ReplacedLocalAiInstall is not null)
             {
-                if (ctx.LocalAiModelReplacementState is { } pending)
+                if (ctx.LocalAiModelReplacement is null)
                 {
-                    if (!replacementStore.MatchesReplacement(pending, manifest))
-                    {
-                        return StepResult.Terminal(
-                            "The pending Local AI model replacement does not match the selected model receipt.");
-                    }
-                }
-                else
-                {
-                    ctx.ReplacedLocalAiRouterPresetExisted = File.Exists(paths.RouterPresetPath);
-                    ctx.ReplacedLocalAiRouterPreset = ctx.ReplacedLocalAiRouterPresetExisted
+                    bool presetExisted = File.Exists(paths.RouterPresetPath);
+                    byte[]? preset = presetExisted
                         ? await File.ReadAllBytesAsync(paths.RouterPresetPath, ct)
                         : null;
-                    ctx.LocalAiModelReplacementState = new LocalAiModelReplacementState
+                    ctx.LocalAiModelReplacement = new LocalAiModelReplacement
                     {
                         PreviousManifest = ctx.ReplacedLocalAiInstall.Manifest,
-                        ReplacementManifest = manifest,
-                        RouterPresetExisted = ctx.ReplacedLocalAiRouterPresetExisted,
-                        RouterPreset = ctx.ReplacedLocalAiRouterPreset,
+                        RouterPresetExisted = presetExisted,
+                        RouterPreset = preset,
                     };
-                    await replacementStore.SaveAsync(ctx.LocalAiModelReplacementState, ct)
-                        .ConfigureAwait(false);
-                    replacementStateCreated = true;
                 }
+                manifest = manifest with { ModelReplacement = ctx.LocalAiModelReplacement };
             }
             await store.SaveAsync(manifest, ct);
             ctx.LocalAiResolvedInstall = store.ResolveAndValidate(manifest);
@@ -647,11 +634,6 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            if (replacementStateCreated)
-            {
-                try { await replacementStore.DeleteAsync(CancellationToken.None).ConfigureAwait(false); }
-                catch { }
-            }
             return StepResult.Fail($"The Local AI installation receipt could not be saved: {ex.Message}", ex);
         }
     }
@@ -687,7 +669,7 @@ public sealed class PersistLocalAiManifestStep : SetupStep
 
         var paths = new LocalAiPaths(ctx.LocalDataDir);
         var store = new LocalAiManifestStore(paths);
-        bool modelReplacement = ctx.LocalAiModelReplacementState is not null;
+        bool modelReplacement = ctx.LocalAiModelReplacement is not null;
         if (modelReplacement)
             ctx.LocalAiModelReplacementRollbackBlocked = true;
         if (ctx.ReplacedLocalAiInstall is { } replacedInstall)
@@ -695,12 +677,13 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         else
             await store.DeleteAsync(ct);
         ct.ThrowIfCancellationRequested();
-        if (ctx.ReplacedLocalAiRouterPresetExisted)
+        LocalAiModelReplacement? replacement = ctx.LocalAiModelReplacement;
+        if (replacement?.RouterPresetExisted == true)
         {
             await WriteFileAtomicallyAsync(
                 paths,
                 paths.RouterPresetPath,
-                ctx.ReplacedLocalAiRouterPreset
+                replacement.RouterPreset
                     ?? throw new InvalidDataException("The previous Local AI router preset snapshot is missing."),
                 ct);
         }
@@ -708,12 +691,9 @@ public sealed class PersistLocalAiManifestStep : SetupStep
         {
             File.Delete(paths.RouterPresetPath);
         }
-        await new LocalAiModelReplacementStore(paths).DeleteAsync(ct).ConfigureAwait(false);
         ctx.LocalAiResolvedInstall = ctx.ReplacedLocalAiInstall;
         ctx.ReplacedLocalAiInstall = null;
-        ctx.LocalAiModelReplacementState = null;
-        ctx.ReplacedLocalAiRouterPreset = null;
-        ctx.ReplacedLocalAiRouterPresetExisted = false;
+        ctx.LocalAiModelReplacement = null;
         ctx.LocalAiManifestCreatedThisRun = false;
         ctx.LocalAiModelReplacementRollbackBlocked = false;
     }

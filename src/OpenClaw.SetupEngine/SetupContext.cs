@@ -515,17 +515,14 @@ public sealed class SetupContext
     internal HuggingFaceModelInstallResult? LocalAiModelInstall { get; set; }
     internal LocalAiResolvedInstall? LocalAiResolvedInstall { get; set; }
     internal LocalAiResolvedInstall? ReplacedLocalAiInstall { get; set; }
-    internal LocalAiModelReplacementState? LocalAiModelReplacementState { get; set; }
+    internal LocalAiModelReplacement? LocalAiModelReplacement { get; set; }
     internal bool LocalAiModelReplacementRollbackBlocked { get; set; }
-    internal byte[]? ReplacedLocalAiRouterPreset { get; set; }
-    internal bool ReplacedLocalAiRouterPresetExisted { get; set; }
     internal bool LocalAiManifestCreatedThisRun { get; set; }
     internal ILocalAiRuntime? LocalAiRuntime { get; set; }
     internal HostHardwareInfo? LocalAiGpuBaseline { get; set; }
     internal LlamaServerInferenceVerification? LocalAiInferenceVerification { get; set; }
     internal LocalAiGpuLoadEvidence? LocalAiGpuLoadEvidence { get; set; }
     internal LocalAiGatewayPriorState? LocalAiGatewayPriorState { get; set; }
-    internal LocalAiResolvedInstall? LocalAiGatewayReplacementPriorInstall { get; set; }
     internal bool IsUninstalling { get; set; }
 
     // Data directory for gateway registry and identity files

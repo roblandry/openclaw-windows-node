@@ -29,7 +29,6 @@ public sealed class LocalAiPaths
         LocalDataDirectory = Path.GetFullPath(localDataDirectory);
         RootDirectory = Path.Combine(LocalDataDirectory, "LocalAI");
         ManifestPath = Path.Combine(RootDirectory, "state.json");
-        ModelReplacementPath = Path.Combine(RootDirectory, "model-replacement.json");
         EnginesDirectory = Path.Combine(RootDirectory, "engines");
         ModelsDirectory = Path.Combine(RootDirectory, "models");
         DownloadsDirectory = Path.Combine(RootDirectory, "downloads");
@@ -43,7 +42,6 @@ public sealed class LocalAiPaths
     public string LocalDataDirectory { get; }
     public string RootDirectory { get; }
     public string ManifestPath { get; }
-    public string ModelReplacementPath { get; }
     public string EnginesDirectory { get; }
     public string ModelsDirectory { get; }
     public string DownloadsDirectory { get; }
@@ -135,6 +133,14 @@ public sealed record LocalAiAssetReceipt
     public required string Sha256 { get; init; }
 }
 
+public sealed record LocalAiModelReplacement
+{
+    public required LocalAiInstallManifest PreviousManifest { get; init; }
+    public required bool RouterPresetExisted { get; init; }
+    public byte[]? RouterPreset { get; init; }
+    public ImmutableArray<string> GatewayEndpoints { get; init; } = [];
+}
+
 public sealed record LocalAiInstallManifest
 {
     public const int CurrentSchemaVersion = 3;
@@ -175,6 +181,7 @@ public sealed record LocalAiInstallManifest
     /// managed llama.cpp model. Null means no prior primary model was configured.
     /// </summary>
     public string? GatewayFallbackModel { get; init; }
+    public LocalAiModelReplacement? ModelReplacement { get; init; }
     public required int ContextLength { get; init; }
     public KvCachePrecision KeyCachePrecision { get; init; } = KvCachePrecision.F16;
     public KvCachePrecision ValueCachePrecision { get; init; } = KvCachePrecision.F16;
@@ -393,6 +400,8 @@ public sealed class LocalAiManifestStore
         LocalAiPortPolicy.Validate(manifest.RequestedPort);
         LocalAiGatewayModelPolicy.ValidateFallbackModel(manifest.GatewayFallbackModel);
 
+        ValidateReplacement(manifest);
+
         Uri? endpoint = null;
         if (manifest.Endpoint is not null)
         {
@@ -415,6 +424,40 @@ public sealed class LocalAiManifestStore
         }
 
         return new LocalAiResolvedInstall(manifest, executable, model, endpoint);
+    }
+
+    private void ValidateReplacement(LocalAiInstallManifest manifest)
+    {
+        if (manifest.ModelReplacement is not { } replacement)
+            return;
+        if (replacement.PreviousManifest.ModelReplacement is not null)
+            throw new InvalidDataException("Nested Local AI model replacements are not supported.");
+
+        _ = ResolveAndValidate(replacement.PreviousManifest);
+        if (string.Equals(
+                replacement.PreviousManifest.ModelCatalogId,
+                manifest.ModelCatalogId,
+                StringComparison.Ordinal) ||
+            !string.Equals(replacement.PreviousManifest.RuntimeId, manifest.RuntimeId, StringComparison.Ordinal) ||
+            !string.Equals(replacement.PreviousManifest.SelectedGpuId, manifest.SelectedGpuId, StringComparison.Ordinal) ||
+            !string.Equals(replacement.PreviousManifest.ExecutablePath, manifest.ExecutablePath, StringComparison.Ordinal) ||
+            !replacement.PreviousManifest.RuntimeAssets.SequenceEqual(manifest.RuntimeAssets))
+        {
+            throw new InvalidDataException(
+                "The Local AI model replacement must retain its runtime and GPU while changing models.");
+        }
+        if (replacement.RouterPresetExisted != (replacement.RouterPreset is not null) ||
+            replacement.RouterPreset is { Length: > 1024 * 1024 } ||
+            replacement.GatewayEndpoints.IsDefault ||
+            replacement.GatewayEndpoints.Length > 8 ||
+            replacement.GatewayEndpoints.Any(string.IsNullOrWhiteSpace) ||
+            replacement.GatewayEndpoints.Distinct(StringComparer.Ordinal).Count() !=
+                replacement.GatewayEndpoints.Length)
+        {
+            throw new InvalidDataException("The Local AI model replacement recovery data is invalid.");
+        }
+        foreach (string endpoint in replacement.GatewayEndpoints)
+            _ = ResolveAndValidate(manifest with { Endpoint = endpoint, ModelReplacement = null });
     }
 
     private static void ValidatePlanIdentifier(string? identifier, string fieldName)
