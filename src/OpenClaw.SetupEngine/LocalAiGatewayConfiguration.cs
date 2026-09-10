@@ -90,7 +90,6 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         try
         {
             prior = ParseSnapshot(snapshotResult.Stdout);
-            ctx.LocalAiGatewayPriorState = prior;
         }
         catch (Exception ex) when (ex is FormatException or JsonException or InvalidDataException)
         {
@@ -98,6 +97,8 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         }
 
         LocalAiResolvedInstall install = ctx.LocalAiResolvedInstall;
+        ctx.LocalAiGatewayPriorState = null;
+        ctx.LocalAiGatewayReplacementPriorInstall = null;
         LocalAiModelReplacementState? replacementState = ctx.LocalAiModelReplacementState;
         var replacementStore = new LocalAiModelReplacementStore(new LocalAiPaths(ctx.LocalDataDir));
         LocalAiResolvedInstall? publishedReplacement = replacementState?.PublishedReplacementEndpoint is { } published
@@ -138,7 +139,6 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                 return StepResult.Fail(
                     "The existing llamacpp gateway route is not the exact companion-managed configuration; preserving it.");
             }
-            ctx.LocalAiGatewayReplacementPriorInstall = null;
             if (replacementPriorInstall is not null &&
                 (matchesCurrentInstall || matchesReplacementPrior ||
                  matchesPublishedReplacement || matchesPendingReplacement))
@@ -155,7 +155,6 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
                         PrimaryModelJson: JsonSerializer.Serialize(
                             LocalAiGatewayProviderDefinition.BuildPrimaryModel(
                                 replacementPriorInstall)));
-                    ctx.LocalAiGatewayPriorState = prior;
                 }
             }
             else
@@ -200,6 +199,7 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
             }
         }
 
+        ctx.LocalAiGatewayPriorState = prior;
         string batchJson = LocalAiGatewayConfigBuilder.BuildBatchJson(ctx);
         if (replacementState is not null)
         {
@@ -446,15 +446,27 @@ public sealed class ConfigureLocalAiGatewayStep : SetupStep
         if (replacementState is not null)
         {
             LocalAiResolvedInstall previous = replacementStore.ResolvePrevious(replacementState);
-            bool providerMatchesPrevious = current.ProviderExisted && previous.Endpoint is not null &&
-                LocalAiGatewayProviderDefinition.MatchesProviderJson(current.ProviderJson!, previous);
-            bool primaryMatchesPrevious = current.PrimaryModelExisted &&
-                JsonEquals(
-                    current.PrimaryModelJson!,
-                    JsonSerializer.Serialize(
-                        LocalAiGatewayProviderDefinition.BuildPrimaryModel(previous)));
-            if (providerMatchesPrevious && primaryMatchesPrevious)
-                install = previous;
+            var candidates = new List<LocalAiResolvedInstall> { previous };
+            if (replacementState.PublishedReplacementEndpoint is { } publishedEndpoint)
+            {
+                candidates.Add(replacementStore.ResolveReplacementEndpoint(
+                    replacementState,
+                    publishedEndpoint));
+            }
+            if (replacementState.PendingReplacementEndpoint is { } pendingEndpoint &&
+                !string.Equals(
+                    pendingEndpoint,
+                    replacementState.PublishedReplacementEndpoint,
+                    StringComparison.Ordinal))
+            {
+                candidates.Add(replacementStore.ResolveReplacementEndpoint(
+                    replacementState,
+                    pendingEndpoint));
+            }
+            LocalAiResolvedInstall? recordedRoute = candidates.FirstOrDefault(
+                candidate => GatewayStateMatchesInstall(current, candidate));
+            if (recordedRoute is not null)
+                install = recordedRoute;
         }
 
         if (install.Endpoint is null)

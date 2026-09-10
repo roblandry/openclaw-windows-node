@@ -158,6 +158,60 @@ public sealed class LocalAiGatewayUninstallTests
     }
 
     [Fact]
+    public async Task RejectedReplacementRoute_DoesNotReleaseRollbackProtection()
+    {
+        using var temp = new TempDirectory("local-ai-gateway-replacement-rejected-");
+        LocalAiResolvedInstall previous = await SaveManifestAsync(temp.Path, "openai/gpt-5");
+        LocalAiInstallManifest replacementManifest = previous.Manifest with
+        {
+            ModelCatalogId = LocalModelCatalog.Qwen27BModelId,
+            ModelAlias = LocalModelCatalog.Qwen27BModelId,
+            GatewayFallbackModel = "openai/gpt-5",
+        };
+        var paths = new LocalAiPaths(temp.Path);
+        var replacementStore = new LocalAiModelReplacementStore(paths);
+        var replacementState = new LocalAiModelReplacementState
+        {
+            PreviousManifest = previous.Manifest,
+            ReplacementManifest = replacementManifest,
+            RouterPresetExisted = false,
+        };
+        await replacementStore.SaveAsync(replacementState);
+        await new LocalAiManifestStore(paths).SaveAsync(replacementManifest);
+        LocalAiResolvedInstall replacement = (await new LocalAiManifestStore(paths).LoadAsync())!;
+        string modifiedProvider = LocalAiGatewayProviderDefinition.BuildProviderJson(replacement).Replace(
+            "\"apiKey\":\"llama-local\"",
+            "\"apiKey\":\"modified\"",
+            StringComparison.Ordinal);
+        var commands = new GatewayStateCommandRunner(
+            modifiedProvider,
+            JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(replacement)));
+        SetupContext context = CreateContext(temp.Path, commands);
+        context.Config.LocalAi.Enabled = true;
+        context.LocalAiResolvedInstall = replacement;
+        context.ReplacedLocalAiInstall = previous;
+        context.LocalAiModelReplacementState = replacementState;
+        context.LocalAiModelReplacementRollbackBlocked = true;
+        context.LocalAiManifestCreatedThisRun = true;
+        context.LocalAiEligibility = LocalInferenceEligibility.Evaluate(
+            CreateQualifiedHardware(),
+            LocalModelCatalog.Qwen27BModelId);
+        var step = new ConfigureLocalAiGatewayStep();
+
+        StepResult result = await step.ExecuteAsync(context, CancellationToken.None);
+        await step.RollbackAsync(context, CancellationToken.None);
+        await new PersistLocalAiManifestStep().RollbackAsync(context, CancellationToken.None);
+
+        Assert.Equal(StepOutcome.Failed, result.Outcome);
+        Assert.True(context.LocalAiModelReplacementRollbackBlocked);
+        Assert.True(File.Exists(paths.ModelReplacementPath));
+        Assert.Equal(
+            replacementManifest.ModelCatalogId,
+            (await new LocalAiManifestStore(paths).LoadAsync())!.Manifest.ModelCatalogId);
+        Assert.Equal(modifiedProvider, commands.ProviderJson);
+    }
+
+    [Fact]
     public async Task FreshProcessUninstall_RemovesPriorRouteDuringInterruptedReplacement()
     {
         using var temp = new TempDirectory("local-ai-gateway-replacement-uninstall-");
@@ -179,6 +233,45 @@ public sealed class LocalAiGatewayUninstallTests
         var commands = new GatewayStateCommandRunner(
             LocalAiGatewayProviderDefinition.BuildProviderJson(previous),
             JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(previous)));
+        SetupContext context = CreateContext(temp.Path, commands);
+        context.IsUninstalling = true;
+
+        await new ConfigureLocalAiGatewayStep().RollbackAsync(context, CancellationToken.None);
+
+        Assert.Null(commands.ProviderJson);
+        Assert.Equal(JsonSerializer.Serialize("openai/gpt-5"), commands.PrimaryJson);
+    }
+
+    [Fact]
+    public async Task FreshProcessUninstall_RemovesRecordedReplacementPortRoute()
+    {
+        using var temp = new TempDirectory("local-ai-gateway-replacement-port-uninstall-");
+        LocalAiResolvedInstall previous = await SaveManifestAsync(temp.Path, "openai/gpt-5");
+        LocalAiInstallManifest replacementManifest = previous.Manifest with
+        {
+            ModelCatalogId = LocalModelCatalog.Qwen27BModelId,
+            ModelAlias = LocalModelCatalog.Qwen27BModelId,
+            Endpoint = "http://127.0.0.1:28766/v1",
+            GatewayFallbackModel = "openai/gpt-5",
+        };
+        const string publishedEndpoint = "http://127.0.0.1:28765/v1";
+        var paths = new LocalAiPaths(temp.Path);
+        var replacementStore = new LocalAiModelReplacementStore(paths);
+        var replacementState = new LocalAiModelReplacementState
+        {
+            PreviousManifest = previous.Manifest,
+            ReplacementManifest = replacementManifest with { Endpoint = null },
+            RouterPresetExisted = false,
+            PublishedReplacementEndpoint = publishedEndpoint,
+        };
+        await replacementStore.SaveAsync(replacementState);
+        await new LocalAiManifestStore(paths).SaveAsync(replacementManifest);
+        LocalAiResolvedInstall publishedReplacement = replacementStore.ResolveReplacementEndpoint(
+            replacementState,
+            publishedEndpoint);
+        var commands = new GatewayStateCommandRunner(
+            LocalAiGatewayProviderDefinition.BuildProviderJson(publishedReplacement),
+            JsonSerializer.Serialize(LocalAiGatewayProviderDefinition.BuildPrimaryModel(publishedReplacement)));
         SetupContext context = CreateContext(temp.Path, commands);
         context.IsUninstalling = true;
 
