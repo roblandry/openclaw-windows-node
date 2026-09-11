@@ -1,0 +1,144 @@
+name: Personal Windows Hub
+
+run-name: Windows Hub ${{ inputs.version }} [${{ inputs.request_id }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version stamped into the private Hub build
+        required: true
+        type: string
+      source_ref:
+        description: Exact upstream openclaw-windows-node commit
+        required: true
+        type: string
+      request_id:
+        description: Unique identifier used by the download script
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Validate inputs
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*)?$ ]]
+          [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REQUEST_ID" =~ ^[A-Za-z0-9._-]+$ ]]
+
+      - name: Checkout exact upstream Windows Hub commit
+        uses: actions/checkout@v7
+        with:
+          repository: openclaw/openclaw-windows-node
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Restore JavaScript and .NET dependencies
+        shell: pwsh
+        run: |
+          npm ci --no-audit --no-fund
+          dotnet restore src/OpenClaw.Tray.WinUI -r win-x64
+
+      - name: Publish Windows Hub
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+        run: |
+          dotnet publish src/OpenClaw.Tray.WinUI `
+            -c Release `
+            -r win-x64 `
+            --self-contained `
+            --no-restore `
+            -o publish-x64 `
+            -p:Version=$env:BUILD_VERSION `
+            -p:InformationalVersion=$env:BUILD_VERSION
+          .\scripts\Test-ReleaseNativeDependencies.ps1 `
+            -PayloadPath publish-x64 `
+            -RequireAppLocalVCRuntime
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Download and verify Microsoft VC++ runtime
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://aka.ms/vc14/vc_redist.x64.exe -OutFile vc_redist.x64.exe
+          $signature = Get-AuthenticodeSignature -LiteralPath vc_redist.x64.exe
+          if ($signature.Status -ne "Valid") {
+            throw "VC++ redistributable signature was $($signature.Status)."
+          }
+          if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
+            throw "VC++ redistributable was not signed by Microsoft Corporation."
+          }
+          .\scripts\Test-ReleaseNativeDependencies.ps1 `
+            -PayloadPath publish-x64 `
+            -RequireAppLocalVCRuntime `
+            -RequireInstallerVCRedist `
+            -InstallerVCRedistPath vc_redist.x64.exe
+
+      - name: Build Windows Hub installer
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$env:BUILD_VERSION" `
+            "/DMyAppArch=x64" `
+            "/Dpublish=publish-x64" `
+            "/DvcRedist=vc_redist.x64.exe" `
+            installer.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Stage checksummed artifact
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          $source = "Output\OpenClawCompanion-Setup-x64.exe"
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "Expected installer was not produced at $source."
+          }
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $name = "OpenClawCompanion-$env:BUILD_VERSION-Setup-x64.exe"
+          Copy-Item -LiteralPath $source -Destination "artifact\$name"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "artifact\$name").Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content -Encoding ascii artifact\SHA256SUMS.windows-hub.txt
+          @(
+            "version=$env:BUILD_VERSION"
+            "source_repository=openclaw/openclaw-windows-node"
+            "source_commit=$env:SOURCE_REF"
+          ) | Set-Content -Encoding ascii artifact\BUILD-INFO.windows-hub.txt
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: openclaw-windows-hub-${{ inputs.version }}-${{ inputs.request_id }}
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 14
