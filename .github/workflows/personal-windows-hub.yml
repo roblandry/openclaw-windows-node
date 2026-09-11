@@ -43,6 +43,7 @@ jobs:
         with:
           repository: openclaw/openclaw-windows-node
           ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup .NET 10
@@ -74,6 +75,9 @@ jobs:
             -o publish-x64 `
             -p:Version=$env:BUILD_VERSION `
             -p:InformationalVersion=$env:BUILD_VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet publish failed with exit code $LASTEXITCODE."
+          }
           .\scripts\Test-ReleaseNativeDependencies.ps1 `
             -PayloadPath publish-x64 `
             -RequireAppLocalVCRuntime
